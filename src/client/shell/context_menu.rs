@@ -415,6 +415,7 @@ impl ClientShellState {
                     Method::PaneSplit(PaneSplitParams {
                         workspace_id: Some(workspace_id),
                         target_pane_id: Some(pane_id),
+                        caller_pane_id: None,
                         direction: if action == ClientContextMenuAction::SplitRight {
                             SplitDirection::Right
                         } else {

@@ -37,6 +37,20 @@ impl App {
         ))
     }
 
+    /// Resolve an internal pane id owned by any workspace to its current public
+    /// id. Used to report dispatch parents recorded on possibly moved panes.
+    pub(crate) fn public_pane_id_for_internal(
+        &self,
+        pane_id: crate::layout::PaneId,
+    ) -> Option<String> {
+        self.state
+            .workspaces
+            .iter()
+            .enumerate()
+            .find(|(_, ws)| ws.tabs.iter().any(|tab| tab.panes.contains_key(&pane_id)))
+            .and_then(|(ws_idx, _)| self.public_pane_id(ws_idx, pane_id))
+    }
+
     pub(super) fn pane_launch_env(
         &self,
         ws_idx: usize,

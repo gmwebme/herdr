@@ -1026,6 +1026,7 @@ impl ClientShellState {
                 Some(Method::PaneSplit(PaneSplitParams {
                     workspace_id: Some(focused_workspace),
                     target_pane_id: focused_pane,
+                    caller_pane_id: None,
                     direction: if action == KeybindAction::SplitVertical {
                         SplitDirection::Right
                     } else {

@@ -160,6 +160,7 @@ pub(super) fn snapshot_with_completions(
             tokens.sort_by(|left, right| left.0.cmp(&right.0));
             protocol::ClientShellAgent {
                 pane_id,
+                parent_pane_id: agent.spawned_by,
                 workspace_id: agent.workspace_id,
                 tab_id: agent.tab_id,
                 name: agent.name,

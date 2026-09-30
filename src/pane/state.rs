@@ -10,6 +10,10 @@ pub struct PaneState {
     pub seen: bool,
     /// Whether unmodified right-click gestures should be forwarded to the pane application.
     pub right_click_passthrough: bool,
+    /// Pane that created this one through a Herdr request (pane split, agent
+    /// launch, workspace/tab creation). Drives the dispatch hierarchy in the
+    /// agents sidebar. `None` for user-created panes.
+    pub spawned_by: Option<crate::layout::PaneId>,
 }
 
 impl PaneState {
@@ -18,6 +22,7 @@ impl PaneState {
             attached_terminal_id,
             seen: true,
             right_click_passthrough: false,
+            spawned_by: None,
         }
     }
 }

@@ -421,6 +421,9 @@ fn agent_command() -> Command {
                     option("timeout", "MS")
                         .help("Wait for interactive readiness (default: 30000; max: 300000)"),
                 )
+                .arg(option("parent", "AGENT|PANE").help(
+                    "Agent or pane that dispatches this launch; defaults to the calling pane when it hosts an agent",
+                ))
                 .arg(
                     Arg::new("agent_args")
                         .value_name("AGENT_ARG")

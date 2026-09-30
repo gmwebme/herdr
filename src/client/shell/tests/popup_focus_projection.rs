@@ -939,6 +939,7 @@ fn sidebar_scrollbars_use_proportional_shared_geometry_and_drag() {
     for index in 1..=10 {
         projected.agents.push(crate::protocol::ClientShellAgent {
             pane_id: format!("agent-pane-{index}"),
+            parent_pane_id: None,
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
             name: Some(format!("agent-{index}")),

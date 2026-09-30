@@ -48,6 +48,11 @@ impl App {
         let Some((ws_idx, target_pane_id)) = target else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
+        let caller_pane_id = params
+            .caller_pane_id
+            .as_deref()
+            .and_then(|caller_pane_id| self.parse_pane_id(caller_pane_id))
+            .map(|(_caller_ws_idx, caller_pane_id)| caller_pane_id);
         let extra_env = match super::env::normalize_launch_env(params.env) {
             Ok(env) => env,
             Err((code, message)) => return encode_error(id, &code, message),
@@ -109,6 +114,7 @@ impl App {
                 params.right_click,
                 crate::api::schema::PaneRightClickTarget::Pane
             );
+            pane.spawned_by = caller_pane_id;
         }
         if params.focus {
             self.state.switch_workspace_tab(ws_idx, target_tab_idx);

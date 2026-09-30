@@ -2682,6 +2682,7 @@ mod tests {
             method: crate::api::schema::Method::PaneSplit(crate::api::schema::PaneSplitParams {
                 workspace_id: None,
                 target_pane_id: Some(target_pane_id),
+                caller_pane_id: None,
                 direction: crate::api::schema::SplitDirection::Right,
                 ratio: None,
                 cwd: None,
@@ -2729,6 +2730,7 @@ mod tests {
             method: crate::api::schema::Method::PaneSplit(crate::api::schema::PaneSplitParams {
                 workspace_id: None,
                 target_pane_id: Some(target_pane_id),
+                caller_pane_id: None,
                 direction: crate::api::schema::SplitDirection::Right,
                 ratio: Some(0.333),
                 cwd: None,
@@ -2784,6 +2786,7 @@ mod tests {
             method: crate::api::schema::Method::PaneSplit(crate::api::schema::PaneSplitParams {
                 workspace_id: None,
                 target_pane_id: None,
+                caller_pane_id: None,
                 direction: crate::api::schema::SplitDirection::Right,
                 ratio: None,
                 cwd: None,
@@ -2812,6 +2815,163 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pane_split_request_records_caller_as_dispatch_parent() {
+        let _guard = config_env_lock().lock().unwrap();
+        let original_shell = std::env::var_os("SHELL");
+        std::env::set_var("SHELL", exiting_test_command());
+
+        let mut app = test_app();
+        let workspace = Workspace::test_new("api-pane-split-parent");
+        let target_pane = workspace.tabs[0].root_pane;
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+
+        let caller_pane_id = app.pane_info(0, target_pane).unwrap().pane_id;
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req_pane_split_parent".into(),
+            method: crate::api::schema::Method::PaneSplit(crate::api::schema::PaneSplitParams {
+                workspace_id: None,
+                target_pane_id: Some(caller_pane_id.clone()),
+                caller_pane_id: Some(caller_pane_id.clone()),
+                direction: crate::api::schema::SplitDirection::Right,
+                ratio: None,
+                cwd: None,
+                focus: false,
+                right_click: Default::default(),
+                env: Default::default(),
+            }),
+        });
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["result"]["type"], "pane_info");
+        let new_pane_id = response["result"]["pane"]["pane_id"].as_str().unwrap();
+        let (_, new_pane_id) = app.parse_pane_id(new_pane_id).unwrap();
+        assert_eq!(
+            app.state.workspaces[0]
+                .pane_state(new_pane_id)
+                .unwrap()
+                .spawned_by,
+            Some(target_pane)
+        );
+
+        let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
+        for (_terminal_id, runtime) in runtimes {
+            runtime.shutdown();
+        }
+        match original_shell {
+            Some(value) => std::env::set_var("SHELL", value),
+            None => std::env::remove_var("SHELL"),
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_start_records_dispatch_parent_from_caller_and_flag() {
+        let mut app = test_app();
+        let mut workspace = Workspace::test_new("agent-start-parent");
+        let parent_pane = workspace.tabs[0].root_pane;
+        let worker_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let explicit_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+
+        let parent_public = app.pane_info(0, parent_pane).unwrap().pane_id;
+        let worker_public = app.pane_info(0, worker_pane).unwrap().pane_id;
+        let explicit_public = app.pane_info(0, explicit_pane).unwrap().pane_id;
+        let parent_terminal_id = app.state.workspaces[0].tabs[0].panes[&parent_pane]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&parent_terminal_id)
+            .unwrap()
+            .set_agent_name("orchestrator".into());
+
+        let mut receivers = Vec::new();
+        for pane_id in [worker_pane, explicit_pane] {
+            let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            let (runtime, receiver) =
+                crate::terminal::TerminalRuntime::test_with_channel_capacity(80, 24, 8);
+            receivers.push(receiver);
+            app.terminal_runtimes.insert(terminal_id, runtime);
+        }
+
+        let start = |name: &str, pane: &str, parent: Option<&str>, caller: Option<&str>| {
+            crate::api::schema::Request {
+                id: format!("req_agent_start_{name}"),
+                method: crate::api::schema::Method::AgentStart(
+                    crate::api::schema::AgentStartParams {
+                        name: name.into(),
+                        kind: "codex".into(),
+                        pane_id: pane.into(),
+                        args: Vec::new(),
+                        timeout_ms: Some(30_000),
+                        parent: parent.map(str::to_string),
+                        caller_pane_id: caller.map(str::to_string),
+                    },
+                ),
+            }
+        };
+
+        // The calling pane hosts an agent, so it becomes the dispatch parent.
+        let response = app.handle_api_request(start(
+            "worker-a",
+            &worker_public,
+            None,
+            Some(&parent_public),
+        ));
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["result"]["type"], "agent_started", "{response}");
+        assert_eq!(
+            response["result"]["agent"]["spawned_by"],
+            parent_public.as_str()
+        );
+        assert_eq!(
+            app.state.workspaces[0]
+                .pane_state(worker_pane)
+                .unwrap()
+                .spawned_by,
+            Some(parent_pane)
+        );
+
+        // An explicit parent overrides a caller that arrives from a plain shell.
+        let response = app.handle_api_request(start(
+            "worker-b",
+            &explicit_public,
+            Some("orchestrator"),
+            Some(&worker_public),
+        ));
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["result"]["type"], "agent_started");
+        assert_eq!(
+            app.state.workspaces[0]
+                .pane_state(explicit_pane)
+                .unwrap()
+                .spawned_by,
+            Some(parent_pane)
+        );
+
+        // Unknown explicit parents are rejected before the launch starts.
+        let response = app.handle_api_request(start(
+            "worker-c",
+            &explicit_public,
+            Some("missing-agent"),
+            Some(&parent_public),
+        ));
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["error"]["code"], "agent_parent_not_found");
+
+        let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
+        for (_terminal_id, runtime) in runtimes {
+            runtime.shutdown();
+        }
+    }
+
+    #[tokio::test]
     async fn unavailable_agent_start_does_not_mutate_topology() {
         let mut app = test_app();
         let workspace = Workspace::test_new("agent-start-target");
@@ -2830,6 +2990,8 @@ mod tests {
                 pane_id,
                 args: Vec::new(),
                 timeout_ms: Some(1_000),
+                parent: None,
+                caller_pane_id: None,
             }),
         });
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
@@ -2872,6 +3034,8 @@ mod tests {
                 pane_id: pane_id.clone(),
                 args: vec!["resume".into(), "codex-session".into()],
                 timeout_ms: Some(4_000),
+                parent: None,
+                caller_pane_id: None,
             }),
         };
         let response = app.handle_api_request(request());

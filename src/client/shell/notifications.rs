@@ -293,6 +293,7 @@ mod tests {
         let mut snapshot = super::super::tests::snapshot();
         snapshot.agents.push(crate::protocol::ClientShellAgent {
             pane_id: "pane_1".into(),
+            parent_pane_id: None,
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
             name: Some("agent".into()),
@@ -339,6 +340,7 @@ mod tests {
         let mut snapshot = super::super::tests::snapshot();
         snapshot.agents.push(crate::protocol::ClientShellAgent {
             pane_id: "pane_1".into(),
+            parent_pane_id: None,
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
             name: Some("agent".into()),

@@ -361,6 +361,8 @@ fn restore_workspace(
         .unwrap_or(1)
         .max(snap.next_public_tab_number);
     let mut failed_imports = 0;
+    let mut old_raw_by_new_id: HashMap<PaneId, u32> = HashMap::new();
+    let mut saved_parent_by_new_id: HashMap<PaneId, u32> = HashMap::new();
 
     for (idx, tab_snap) in snap.tabs.iter().enumerate() {
         let tab_number = snap.public_tab_numbers.get(idx).copied().unwrap_or(idx + 1);
@@ -381,6 +383,16 @@ fn restore_workspace(
         else {
             continue;
         };
+        for (new_id, old_raw) in &reverse_id_map {
+            old_raw_by_new_id.insert(*new_id, *old_raw);
+            if let Some(saved_parent) = tab_snap
+                .panes
+                .get(old_raw)
+                .and_then(|saved_pane| saved_pane.spawned_by)
+            {
+                saved_parent_by_new_id.insert(*new_id, saved_parent);
+            }
+        }
         if let Some(public_tab_number) = snap.public_tab_numbers.get(idx).copied() {
             tab.number = public_tab_number;
         }
@@ -405,6 +417,30 @@ fn restore_workspace(
         terminals.extend(restored_terminals);
         terminal_runtimes.extend(restored_runtimes);
         tabs.push(tab);
+    }
+
+    // Reconnect saved dispatch parents to their remapped pane ids. Parents in
+    // another workspace are not remapped here and re-root on restore.
+    if !saved_parent_by_new_id.is_empty() {
+        let new_id_by_old_raw = old_raw_by_new_id
+            .iter()
+            .map(|(new_id, old_raw)| (*old_raw, *new_id))
+            .collect::<HashMap<u32, PaneId>>();
+        let surviving: HashSet<PaneId> = tabs
+            .iter()
+            .flat_map(|tab| tab.panes.keys().copied())
+            .collect();
+        for tab in tabs.iter_mut() {
+            for (pane_id, pane) in tab.panes.iter_mut() {
+                let Some(saved_parent) = saved_parent_by_new_id.get(pane_id).copied() else {
+                    continue;
+                };
+                pane.spawned_by = new_id_by_old_raw
+                    .get(&saved_parent)
+                    .copied()
+                    .filter(|parent| *parent != *pane_id && surviving.contains(parent));
+            }
+        }
     }
 
     if tabs.is_empty() {
@@ -1556,6 +1592,7 @@ mod tests {
                             }),
                             agent_resume: None,
                             launch_argv: None,
+                            spawned_by: None,
                         },
                     )]),
                     zoomed: false,
@@ -1638,6 +1675,7 @@ mod tests {
                                 agent_session: None,
                                 agent_resume: None,
                                 launch_argv: None,
+                                spawned_by: None,
                             },
                         ),
                         (
@@ -1650,6 +1688,7 @@ mod tests {
                                 agent_session: None,
                                 agent_resume: None,
                                 launch_argv: None,
+                                spawned_by: Some(10),
                             },
                         ),
                     ]),
@@ -1688,6 +1727,19 @@ mod tests {
         assert_eq!(workspace.next_public_pane_number, 4);
         assert_eq!(workspace.tabs[0].number, 5);
         assert_eq!(workspace.next_public_tab_number, 6);
+
+        // The saved dispatch parent follows the remapped pane ids.
+        let pane_by_public_number = |number: usize| {
+            workspace.tabs[0]
+                .panes
+                .keys()
+                .copied()
+                .find(|pane_id| workspace.public_pane_number(*pane_id) == Some(number))
+                .expect("pane for public number")
+        };
+        let parent = pane_by_public_number(1);
+        let child = pane_by_public_number(3);
+        assert_eq!(workspace.tabs[0].panes[&child].spawned_by, Some(parent));
     }
 
     #[tokio::test]
@@ -1704,6 +1756,7 @@ mod tests {
                     agent_session: None,
                     agent_resume: None,
                     launch_argv: None,
+                    spawned_by: None,
                 },
             )
         };
@@ -1720,6 +1773,7 @@ mod tests {
             }),
             agent_resume: None,
             launch_argv: None,
+            spawned_by: None,
         };
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
@@ -1872,6 +1926,7 @@ mod tests {
                             }),
                             agent_resume: None,
                             launch_argv: None,
+                            spawned_by: None,
                         },
                     )]),
                     zoomed: false,
@@ -2178,6 +2233,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                spawned_by: None,
             },
         );
         let mut history = SessionHistorySnapshot {

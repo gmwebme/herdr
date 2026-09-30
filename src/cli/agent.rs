@@ -288,7 +288,7 @@ fn matched_rule_region_preview<'a>(
 
 fn agent_start(args: &[String]) -> std::io::Result<i32> {
     let Some(name) = args.first() else {
-        eprintln!("usage: herdr agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]");
+        eprintln!("usage: herdr agent start <name> --kind KIND --pane ID [--parent AGENT|PANE] [--timeout MS] [-- <agent-args...>]");
         return Ok(2);
     };
     let separator = args
@@ -297,6 +297,7 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
         .unwrap_or(args.len());
     let mut kind = None;
     let mut pane_id = None;
+    let mut parent = None;
     let mut timeout_ms = None;
     let mut index = 1;
     while index < separator {
@@ -315,6 +316,14 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
                     return Ok(2);
                 };
                 pane_id = Some(super::normalize_pane_id(value));
+                index += 2;
+            }
+            "--parent" => {
+                let Some(value) = args.get(index + 1).filter(|_| index + 1 < separator) else {
+                    eprintln!("missing value for --parent");
+                    return Ok(2);
+                };
+                parent = Some(value.clone());
                 index += 2;
             }
             "--timeout" => {
@@ -355,6 +364,7 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
     let retryable_timeout = timeout > crate::app::AGENT_START_SETTLE_DELAY
         && timeout <= crate::app::MAX_AGENT_START_TIMEOUT;
+    let caller_pane_id = super::target::caller_pane_id();
     let pinned_terminal_id = pane_terminal_id(&pane_id)?;
     let mut retry_deadline = None;
     let mut previous_busy_response = None;
@@ -377,6 +387,8 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
                 pane_id: pane_id.clone(),
                 args: agent_args.clone(),
                 timeout_ms,
+                parent: parent.clone(),
+                caller_pane_id: caller_pane_id.clone(),
             }),
         })?;
         if response.get("error").is_none() {
@@ -941,7 +953,7 @@ fn print_agent_help() {
     eprintln!("  herdr agent wait <target> [--until STATUS]... [--timeout MS]");
     eprintln!("  herdr agent attach <target> [--takeover]");
     eprintln!(
-        "  herdr agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]"
+        "  herdr agent start <name> --kind KIND --pane ID [--parent AGENT|PANE] [--timeout MS] [-- <agent-args...>]"
     );
     eprintln!("  herdr agent explain <target> [--json|--format text|json] [--verbose]");
     eprintln!(

@@ -24,6 +24,7 @@ fn agent(
 ) -> ClientShellAgent {
     ClientShellAgent {
         pane_id: "pane_1".into(),
+        parent_pane_id: None,
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
         name: Some(name.into()),
@@ -126,6 +127,7 @@ fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {
         projection.agents = (0..8)
             .map(|index| ClientShellAgent {
                 pane_id: format!("pane_{}", index + 1),
+                parent_pane_id: None,
                 focused: index == 0,
                 ..agent(&format!("agent {index}"), AgentStatus::Idle, 1)
             })
@@ -1165,6 +1167,7 @@ fn current_workspace_or_blocked_keeps_foreign_attention_only() {
         agent("remote idle", AgentStatus::Idle, 1),
         ClientShellAgent {
             pane_id: "pane_2".into(),
+            parent_pane_id: None,
             name: Some("remote blocked".into()),
             agent_status: AgentStatus::Blocked,
             focused: false,

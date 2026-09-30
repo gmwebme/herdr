@@ -2140,6 +2140,19 @@ impl ClientShellState {
                 if self.handle_endpoint_agent_click(point, outcome) {
                     return;
                 }
+                let agent_toggle = self
+                    .hits
+                    .agent_toggles
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, pane_id)| pane_id.clone());
+                if let Some(pane_id) = agent_toggle {
+                    let endpoint_id = self.active_endpoint_id.clone();
+                    self.toggle_collapsed_agent_parent(&endpoint_id, &pane_id);
+                    outcome.repaint = true;
+                    self.persist_chrome_preferences(outcome);
+                    return;
+                }
                 let agent_pane_id = self
                     .hits
                     .agents

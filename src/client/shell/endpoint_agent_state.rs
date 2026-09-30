@@ -210,6 +210,7 @@ mod tests {
     fn agent(status: AgentStatus, sequence: u64) -> ClientShellAgent {
         ClientShellAgent {
             pane_id: "agent-pane".into(),
+            parent_pane_id: None,
             workspace_id: "workspace".into(),
             tab_id: "tab".into(),
             name: None,

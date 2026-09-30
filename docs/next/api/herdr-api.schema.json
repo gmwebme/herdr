@@ -1346,6 +1346,13 @@
               },
               "type": "array"
             },
+            "caller_pane_id": {
+              "description": "Pane that issued the launch, when the request came from another pane.\nUsed as the dispatch parent when `parent` is not set.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "kind": {
               "type": "string"
             },
@@ -1354,6 +1361,13 @@
             },
             "pane_id": {
               "type": "string"
+            },
+            "parent": {
+              "description": "Explicit dispatch parent: an agent name or a pane id. Wins over the\ncalling pane when both are present.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "timeout_ms": {
               "description": "Startup timeout in milliseconds. Values must be greater than 3000 and at most 300000.",
@@ -3214,6 +3228,13 @@
         },
         "PaneSplitParams": {
           "properties": {
+            "caller_pane_id": {
+              "description": "Pane that issued the split, when the request came from another pane.\nHerdr records it as the new pane's dispatch parent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "cwd": {
               "type": [
                 "string",
@@ -6613,6 +6634,13 @@
             },
             "screen_detection_skipped": {
               "type": "boolean"
+            },
+            "spawned_by": {
+              "description": "Public pane id of the pane that dispatched this agent, when Herdr\nrecorded one. `None` for agents started outside another pane.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "state_change_seq": {
               "default": 0,

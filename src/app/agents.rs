@@ -172,6 +172,8 @@ impl App {
         let Some((ws_idx, pane_id)) = self.parse_current_public_pane_id(&params.pane_id) else {
             return Err(AgentStartError::TargetNotFound(params.pane_id));
         };
+        let parent_pane_id = self
+            .resolve_dispatch_parent(params.parent.as_deref(), params.caller_pane_id.as_deref())?;
         let terminal_id = self
             .state
             .workspaces
@@ -222,6 +224,11 @@ impl App {
         if let Some(session) = persisted_agent_session {
             terminal.set_managed_agent_launch_session(session);
         }
+        if let Some(parent_pane_id) = parent_pane_id {
+            if let Some(pane) = self.state.workspaces[ws_idx].pane_state_mut(pane_id) {
+                pane.spawned_by = Some(parent_pane_id);
+            }
+        }
         self.state.mark_session_dirty();
         self.schedule_session_save();
 
@@ -229,6 +236,40 @@ impl App {
             .agent_info(ws_idx, pane_id)
             .ok_or(AgentStartError::TargetUnavailable(params.pane_id))?;
         Ok((agent, argv))
+    }
+
+    /// Resolve the pane that should own a newly launched agent: an explicit
+    /// parent (agent name or pane id) wins, otherwise the calling pane when it
+    /// hosts an agent. Panes keep any parent recorded when they were created.
+    fn resolve_dispatch_parent(
+        &self,
+        explicit: Option<&str>,
+        caller: Option<&str>,
+    ) -> Result<Option<crate::layout::PaneId>, AgentStartError> {
+        if let Some(explicit) = explicit {
+            if let Some((_ws_idx, pane_id)) = self.parse_pane_id(explicit) {
+                if self.public_pane_id_for_internal(pane_id).is_some() {
+                    return Ok(Some(pane_id));
+                }
+            }
+            return match self.resolve_agent_target(explicit) {
+                Ok(resolved) => Ok(Some(resolved.pane_id)),
+                Err(_) => Err(AgentStartError::ParentNotFound(explicit.to_string())),
+            };
+        }
+        let Some((caller_ws_idx, caller_pane_id)) =
+            caller.and_then(|caller| self.parse_pane_id(caller))
+        else {
+            return Ok(None);
+        };
+        let caller_hosts_agent = self
+            .state
+            .workspaces
+            .get(caller_ws_idx)
+            .and_then(|workspace| workspace.terminal_id(caller_pane_id))
+            .and_then(|terminal_id| self.state.terminals.get(terminal_id))
+            .is_some_and(|terminal| terminal.is_agent_terminal());
+        Ok(caller_hosts_agent.then_some(caller_pane_id))
     }
 
     pub(super) fn agent_start_error_body(
@@ -263,6 +304,10 @@ impl App {
             AgentStartError::TargetUnavailable(target) => crate::api::schema::ErrorBody {
                 code: "agent_pane_unavailable".into(),
                 message: format!("agent target pane {target} has no live terminal"),
+            },
+            AgentStartError::ParentNotFound(parent) => crate::api::schema::ErrorBody {
+                code: "agent_parent_not_found".into(),
+                message: format!("agent parent {parent} is not a live agent or pane"),
             },
             AgentStartError::InputFailed(message) => crate::api::schema::ErrorBody {
                 code: "agent_start_input_failed".into(),
@@ -378,6 +423,9 @@ impl App {
         Some(crate::api::schema::AgentInfo {
             terminal_id: pane.terminal_id,
             name: terminal.agent_name.clone(),
+            spawned_by: pane_state
+                .spawned_by
+                .and_then(|parent| self.public_pane_id_for_internal(parent)),
             agent: pane.agent,
             title: pane.title,
             terminal_title: pane.terminal_title,
@@ -455,6 +503,7 @@ pub(super) enum AgentStartError {
     TargetBusy(String),
     TargetUnavailable(String),
     InputFailed(String),
+    ParentNotFound(String),
     DuplicateName {
         name: String,
         candidates: Vec<crate::api::schema::AgentInfo>,

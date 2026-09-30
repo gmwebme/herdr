@@ -21,6 +21,10 @@ pub struct PaneSplitParams {
     pub workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_pane_id: Option<String>,
+    /// Pane that issued the split, when the request came from another pane.
+    /// Herdr records it as the new pane's dispatch parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
     pub direction: SplitDirection,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ratio: Option<f32>,

@@ -730,6 +730,7 @@ fn parse_pane_split_args(
     Ok(PaneSplitParams {
         workspace_id: None,
         target_pane_id: pane_id,
+        caller_pane_id: env_pane_id.map(super::normalize_pane_id),
         direction,
         ratio,
         cwd,

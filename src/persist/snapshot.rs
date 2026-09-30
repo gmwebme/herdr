@@ -111,6 +111,9 @@ pub struct PaneSnapshot {
     pub agent_resume: Option<PaneAgentResumeSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_argv: Option<Vec<String>>,
+    /// Raw pane id of the dispatch parent, remapped on restore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawned_by: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -388,6 +391,11 @@ fn capture_tab(
                 agent_session,
                 agent_resume,
                 launch_argv,
+                spawned_by: tab
+                    .panes
+                    .get(id)
+                    .and_then(|pane| pane.spawned_by)
+                    .map(|parent| parent.raw()),
             },
         );
     }
@@ -707,6 +715,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                spawned_by: None,
             },
         );
         panes.insert(
@@ -719,6 +728,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                spawned_by: None,
             },
         );
 
@@ -1405,6 +1415,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                spawned_by: None,
             },
         );
         panes.insert(
@@ -1419,6 +1430,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                spawned_by: None,
             },
         );
 

@@ -1092,6 +1092,9 @@ pub struct ClientShellPane {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientShellAgent {
     pub pane_id: String,
+    /// Public pane id of the pane that dispatched this agent, when recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_pane_id: Option<String>,
     pub workspace_id: String,
     pub tab_id: String,
     pub name: Option<String>,

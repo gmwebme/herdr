@@ -72,7 +72,7 @@ pub(super) fn render_expanded(
         hits,
         |row| row.agent.rows.len(),
         |buffer, rect, row, hits| {
-            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config);
+            let _ = super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config);
             if row.stale {
                 buffer.set_style(
                     rect,
@@ -94,6 +94,9 @@ impl ClientShellState {
         pane_id: &str,
         body_height: u16,
     ) {
+        if endpoint_id.is_local() {
+            self.expand_agent_ancestors(pane_id);
+        }
         if body_height == 0 {
             return;
         }
@@ -119,6 +122,35 @@ impl ClientShellState {
             self.agent_scroll,
             target,
         );
+    }
+
+    /// Expand every collapsed parent above `pane_id` so a reveal can land on a
+    /// row that a collapse would otherwise hide.
+    fn expand_agent_ancestors(&mut self, pane_id: &str) {
+        let mut ancestors = Vec::new();
+        if let Some(snapshot) = self.snapshot.as_deref() {
+            let mut cursor = snapshot
+                .agents
+                .iter()
+                .find(|agent| agent.pane_id == pane_id)
+                .and_then(|agent| agent.parent_pane_id.clone());
+            let mut steps = 0;
+            while let Some(parent) = cursor {
+                if steps > snapshot.agents.len() {
+                    break;
+                }
+                cursor = snapshot
+                    .agents
+                    .iter()
+                    .find(|agent| agent.pane_id == parent)
+                    .and_then(|agent| agent.parent_pane_id.clone());
+                ancestors.push(parent);
+                steps += 1;
+            }
+        }
+        for parent in ancestors {
+            self.collapsed_agent_parents.remove(&parent);
+        }
     }
 }
 

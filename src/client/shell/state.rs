@@ -94,6 +94,8 @@ pub(super) struct ShellHitMap {
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
     pub(super) agents: Vec<(Rect, String)>,
+    /// Collapse toggles on agent rows that have dispatch children.
+    pub(super) agent_toggles: Vec<(Rect, String)>,
     pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String)>,
     pub(super) agent_body: Rect,
     pub(super) agent_scrollbar: Rect,
@@ -871,6 +873,8 @@ pub(crate) struct ClientShellState {
     pub(super) tab_press: Option<ClientTabPress>,
     pub(super) collapsed_groups: HashSet<String>,
     pub(super) remote_collapsed_groups: HashMap<ClientEndpointId, HashSet<String>>,
+    /// Agent rows collapsed in the dispatch hierarchy, keyed by public pane id.
+    pub(super) collapsed_agent_parents: HashSet<String>,
     pub(super) workspace_scroll: usize,
     pub(super) agent_scroll: usize,
     pub(super) pending_agent_reveal: Option<(ClientEndpointId, String)>,
@@ -1036,6 +1040,7 @@ impl ClientShellState {
             tab_press: None,
             collapsed_groups: preferences.collapsed_groups.into_iter().collect(),
             remote_collapsed_groups,
+            collapsed_agent_parents: preferences.collapsed_agent_parents.into_iter().collect(),
             workspace_scroll: 0,
             agent_scroll: 0,
             pending_agent_reveal: None,
@@ -1145,6 +1150,20 @@ impl ClientShellState {
     pub(super) fn group_is_collapsed(&self, endpoint_id: &ClientEndpointId, key: &str) -> bool {
         self.collapsed_groups_for_endpoint(endpoint_id)
             .is_some_and(|groups| groups.contains(key))
+    }
+
+    pub(super) fn toggle_collapsed_agent_parent(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        pane_id: &str,
+    ) {
+        if !endpoint_id.is_local() {
+            // The hierarchy is rendered from the active endpoint snapshot only.
+            return;
+        }
+        if !self.collapsed_agent_parents.remove(pane_id) {
+            self.collapsed_agent_parents.insert(pane_id.to_string());
+        }
     }
 
     pub(super) fn toggle_collapsed_group(&mut self, endpoint_id: &ClientEndpointId, key: String) {

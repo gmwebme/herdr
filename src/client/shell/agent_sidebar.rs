@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ratatui::{
     buffer::Buffer,
@@ -15,9 +15,32 @@ pub(super) struct AgentRow {
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
+    /// Nesting depth in the dispatch hierarchy (0 = top level).
+    pub(super) depth: usize,
+    /// Whether this row is the last child of its parent, for tree connectors.
+    pub(super) last_child: bool,
+    /// Number of dispatch descendants anywhere below this row.
+    pub(super) descendant_count: usize,
+    /// Blocked agents below this row (excluding the row itself).
+    pub(super) descendants_blocked: usize,
+    /// Whether this row has children hidden behind a collapse.
+    pub(super) collapsed: bool,
+    /// Whether this row has any dispatch children at all.
+    pub(super) has_children: bool,
 }
 
-pub(super) fn ordered_agent_pane_ids(
+pub(super) struct AgentTreeEntry {
+    pub(super) pane_id: String,
+    pub(super) depth: usize,
+    pub(super) last_child: bool,
+    pub(super) descendant_count: usize,
+    pub(super) descendants_blocked: usize,
+    pub(super) collapsed: bool,
+    pub(super) has_children: bool,
+}
+
+/// Flat order used by the agents panel when no dispatch hierarchy applies.
+fn agent_base_order(
     snapshot: &ClientShellSnapshot,
     sort: crate::config::AgentPanelSortConfig,
 ) -> Vec<String> {
@@ -49,11 +72,181 @@ pub(super) fn ordered_agent_pane_ids(
         .collect()
 }
 
+/// Walk the agents panel in dispatch order: every parent directly precedes its
+/// children, and children of a collapsed parent are skipped.
+pub(super) fn agent_tree_entries(
+    snapshot: &ClientShellSnapshot,
+    sort: crate::config::AgentPanelSortConfig,
+    collapsed: &HashSet<String>,
+) -> Vec<AgentTreeEntry> {
+    let order = agent_base_order(snapshot, sort);
+    if order.is_empty() {
+        return Vec::new();
+    }
+    let index_of = order
+        .iter()
+        .enumerate()
+        .map(|(index, pane_id)| (pane_id.as_str(), index))
+        .collect::<HashMap<_, _>>();
+    let statuses = order
+        .iter()
+        .map(|pane_id| {
+            snapshot
+                .agents
+                .iter()
+                .find(|agent| agent.pane_id == *pane_id)
+                .map(|agent| agent.agent_status)
+                .unwrap_or(crate::api::schema::AgentStatus::Unknown)
+        })
+        .collect::<Vec<_>>();
+    let mut parent = vec![None; order.len()];
+    for (index, pane_id) in order.iter().enumerate() {
+        let Some(agent) = snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.pane_id == *pane_id)
+        else {
+            continue;
+        };
+        let Some(parent_id) = agent.parent_pane_id.as_deref() else {
+            continue;
+        };
+        let Some(&candidate) = index_of.get(parent_id) else {
+            // A parent that is gone or filtered out re-roots its children.
+            continue;
+        };
+        if candidate == index || creates_agent_cycle(&parent, index, candidate) {
+            continue;
+        }
+        parent[index] = Some(candidate);
+    }
+    let mut children = vec![Vec::new(); order.len()];
+    let mut roots = Vec::new();
+    for (index, parent_index) in parent.iter().enumerate() {
+        match parent_index {
+            Some(parent_index) => children[*parent_index].push(index),
+            None => roots.push(index),
+        }
+    }
+    if sort == crate::config::AgentPanelSortConfig::Priority {
+        roots.sort_by_key(|index| {
+            (
+                std::cmp::Reverse(subtree_stats(*index, &children, &statuses).0),
+                *index,
+            )
+        });
+    }
+    let mut entries = Vec::new();
+    for root in roots {
+        push_agent_tree_entry(
+            &mut entries,
+            root,
+            0,
+            false,
+            &children,
+            &statuses,
+            collapsed,
+            &order,
+        );
+    }
+    entries
+}
+
+fn creates_agent_cycle(parent: &[Option<usize>], index: usize, candidate: usize) -> bool {
+    let mut cursor = Some(candidate);
+    let mut steps = 0;
+    while let Some(current) = cursor {
+        if current == index {
+            return true;
+        }
+        steps += 1;
+        if steps > parent.len() {
+            return true;
+        }
+        cursor = parent[current];
+    }
+    false
+}
+
+/// Return `(highest status priority, descendant count, blocked descendants)`.
+fn subtree_stats(
+    index: usize,
+    children: &[Vec<usize>],
+    statuses: &[crate::api::schema::AgentStatus],
+) -> (u8, usize, usize) {
+    let mut priority = status_priority(statuses[index]);
+    let mut count = 0usize;
+    let mut blocked = 0usize;
+    for &child in &children[index] {
+        let (child_priority, child_count, child_blocked) = subtree_stats(child, children, statuses);
+        priority = priority.max(child_priority);
+        count += child_count + 1;
+        blocked += child_blocked
+            + usize::from(statuses[child] == crate::api::schema::AgentStatus::Blocked);
+    }
+    (priority, count, blocked)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_agent_tree_entry(
+    entries: &mut Vec<AgentTreeEntry>,
+    index: usize,
+    depth: usize,
+    last_child: bool,
+    children: &[Vec<usize>],
+    statuses: &[crate::api::schema::AgentStatus],
+    collapsed: &HashSet<String>,
+    order: &[String],
+) {
+    let pane_id = &order[index];
+    let (_, descendant_count, descendants_blocked) = subtree_stats(index, children, statuses);
+    let has_children = !children[index].is_empty();
+    let is_collapsed = has_children && collapsed.contains(pane_id.as_str());
+    entries.push(AgentTreeEntry {
+        pane_id: pane_id.clone(),
+        depth,
+        last_child,
+        descendant_count,
+        descendants_blocked,
+        collapsed: is_collapsed,
+        has_children,
+    });
+    if is_collapsed {
+        return;
+    }
+    let child_count = children[index].len();
+    for (position, child) in children[index].iter().copied().enumerate() {
+        push_agent_tree_entry(
+            entries,
+            child,
+            depth + 1,
+            position + 1 == child_count,
+            children,
+            statuses,
+            collapsed,
+            order,
+        );
+    }
+}
+
+/// Flat dispatch order used by cycling and compact surfaces. Children follow
+/// their parent; a collapsed set is only used by the rendered panel.
+pub(super) fn ordered_agent_pane_ids(
+    snapshot: &ClientShellSnapshot,
+    sort: crate::config::AgentPanelSortConfig,
+) -> Vec<String> {
+    agent_tree_entries(snapshot, sort, &HashSet::new())
+        .into_iter()
+        .map(|entry| entry.pane_id)
+        .collect()
+}
+
 pub(super) fn render_agent_panel(
     buffer: &mut Buffer,
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    collapsed_agent_parents: &HashSet<String>,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
 ) {
@@ -67,7 +260,7 @@ pub(super) fn render_agent_panel(
         return;
     }
 
-    let rows = agent_rows(snapshot, config, None);
+    let rows = agent_rows(snapshot, config, None, collapsed_agent_parents);
     render_agent_list(
         buffer,
         area,
@@ -82,7 +275,9 @@ pub(super) fn render_agent_panel(
         |row| row.rows.len(),
         |buffer, rect, row, hits| {
             hits.agents.push((rect, row.pane_id.clone()));
-            render_agent_row(buffer, rect, row, config);
+            if let Some(toggle) = render_agent_row(buffer, rect, row, config) {
+                hits.agent_toggles.push((toggle, row.pane_id.clone()));
+            }
         },
     );
 }
@@ -238,10 +433,20 @@ pub(super) fn agent_rows(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     machine: Option<&str>,
+    collapsed: &HashSet<String>,
 ) -> Vec<AgentRow> {
-    ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
+    agent_tree_entries(snapshot, config.agent_panel_sort, collapsed)
         .into_iter()
-        .filter_map(|pane_id| agent_row(snapshot, &pane_id, config, machine))
+        .filter_map(|entry| {
+            let mut row = agent_row(snapshot, &entry.pane_id, config, machine)?;
+            row.depth = entry.depth;
+            row.last_child = entry.last_child;
+            row.descendant_count = entry.descendant_count;
+            row.descendants_blocked = entry.descendants_blocked;
+            row.collapsed = entry.collapsed;
+            row.has_children = entry.has_children;
+            Some(row)
+        })
         .collect()
 }
 
@@ -315,6 +520,12 @@ pub(super) fn agent_row(
         status: agent.agent_status,
         focused: agent.focused,
         rows,
+        depth: 0,
+        last_child: false,
+        descendant_count: 0,
+        descendants_blocked: 0,
+        collapsed: false,
+        has_children: false,
     })
 }
 
@@ -323,7 +534,7 @@ pub(super) fn render_agent_row(
     rect: Rect,
     row: &AgentRow,
     config: &ClientShellConfig,
-) {
+) -> Option<Rect> {
     let palette = &config.palette;
     let row_style = if row.focused {
         Style::default().bg(palette.active_row_bg)
@@ -353,9 +564,33 @@ pub(super) fn render_agent_row(
     } else {
         row.rows.clone()
     };
+    let toggle = row
+        .has_children
+        .then(|| Rect::new(rect.right().saturating_sub(1), rect.y, 1, 1));
+    let last_index = rows.len().saturating_sub(1);
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
-        let indent = if index == 0 { 1 } else { 3 };
-        let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
+        let (first_prefix, continuation_prefix) = agent_tree_prefix(row);
+        let prefix = if index == 0 {
+            &first_prefix
+        } else {
+            &continuation_prefix
+        };
+        let indent = display_width(prefix);
+        let collapsed_suffix = (index == last_index && row.collapsed && row.descendant_count > 0)
+            .then(|| format!("+{}", row.descendant_count));
+        let blocked_suffix = (index == last_index && row.collapsed && row.descendants_blocked > 0)
+            .then(|| format!(" \u{d7}{}", row.descendants_blocked));
+        let suffix_width = collapsed_suffix.as_deref().map_or(0, display_width)
+            + blocked_suffix.as_deref().map_or(0, display_width);
+        let toggle_reserve = usize::from(toggle.is_some() && index == 0);
+        let content_width = (rect.width as usize)
+            .saturating_sub(indent)
+            .saturating_sub(suffix_width)
+            .saturating_sub(toggle_reserve);
+        let mut spans = vec![ratatui::text::Span::styled(
+            prefix.clone(),
+            Style::default().fg(palette.overlay0),
+        )];
         spans.extend(crate::ui::resolved_token_spans(
             tokens,
             icon,
@@ -364,13 +599,63 @@ pub(super) fn render_agent_row(
             secondary,
             secondary,
             palette,
-            rect.width.saturating_sub(indent as u16) as usize,
+            content_width,
         ));
+        if let Some(suffix) = collapsed_suffix {
+            spans.push(ratatui::text::Span::styled(
+                suffix,
+                Style::default().fg(palette.overlay0),
+            ));
+        }
+        if let Some(suffix) = blocked_suffix {
+            spans.push(ratatui::text::Span::styled(
+                suffix,
+                Style::default().fg(status_color(
+                    crate::api::schema::AgentStatus::Blocked,
+                    palette,
+                )),
+            ));
+        }
         Paragraph::new(Line::from(spans)).style(row_style).render(
             Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
             buffer,
         );
     }
+    if let Some(toggle) = toggle {
+        put_text(
+            buffer,
+            toggle.x,
+            toggle.y,
+            toggle.width,
+            if row.collapsed {
+                "\u{25b8}"
+            } else {
+                "\u{25be}"
+            },
+            Style::default().fg(palette.accent),
+        );
+    }
+    toggle
+}
+
+fn agent_tree_prefix(row: &AgentRow) -> (String, String) {
+    if row.depth == 0 {
+        return (" ".to_string(), "   ".to_string());
+    }
+    let base = "   ".repeat(row.depth);
+    let first = format!(
+        "{base}{}",
+        if row.last_child {
+            "\u{2514}\u{2500} "
+        } else {
+            "\u{251c}\u{2500} "
+        }
+    );
+    let continuation = format!(
+        "{base}{}",
+        if row.last_child { "   " } else { "\u{2502}  " }
+    );
+    (first, continuation)
 }
 
 fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: Style) {

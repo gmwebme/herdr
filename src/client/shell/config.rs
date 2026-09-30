@@ -32,6 +32,12 @@ impl ClientShellState {
         };
         let mut collapsed_groups = self.collapsed_groups.iter().cloned().collect::<Vec<_>>();
         collapsed_groups.sort();
+        let mut collapsed_agent_parents = self
+            .collapsed_agent_parents
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        collapsed_agent_parents.sort();
         let mut remote_collapsed_groups = self
             .remote_collapsed_groups
             .iter()
@@ -60,6 +66,7 @@ impl ClientShellState {
                 .agent_panel_sort_manual
                 .then_some(self.config.agent_panel_sort),
             collapsed_groups,
+            collapsed_agent_parents,
             remote_collapsed_groups,
         };
         if let Err(error) = preferences::store(path, preferences) {

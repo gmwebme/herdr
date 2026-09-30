@@ -569,6 +569,7 @@ fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
     initial.agents = vec![
         ClientShellAgent {
             pane_id: "pane_1".into(),
+            parent_pane_id: None,
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
             name: Some("first".into()),
@@ -585,6 +586,7 @@ fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
         },
         ClientShellAgent {
             pane_id: "pane_2".into(),
+            parent_pane_id: None,
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
             name: Some("second".into()),
@@ -659,6 +661,7 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
     projected.agents = vec![
         ClientShellAgent {
             pane_id: "pane_1".into(),
+            parent_pane_id: None,
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
             name: Some("pi one".into()),
@@ -675,6 +678,7 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
         },
         ClientShellAgent {
             pane_id: "pane_2".into(),
+            parent_pane_id: None,
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
             name: Some("pi two".into()),
@@ -798,6 +802,7 @@ fn muted_agent_sidebar_rows_do_not_stack_terminal_faint() {
     projected.tabs[0].custom_label = true;
     projected.agents = vec![ClientShellAgent {
         pane_id: "pane_1".into(),
+        parent_pane_id: None,
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
         name: Some("reviewer".into()),
@@ -865,6 +870,7 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
     projected.agents = vec![
         ClientShellAgent {
             pane_id: "pane_1".into(),
+            parent_pane_id: None,
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
             name: Some("first".into()),
@@ -881,6 +887,7 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
         },
         ClientShellAgent {
             pane_id: "pane_2".into(),
+            parent_pane_id: None,
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
             name: Some("second".into()),
@@ -897,6 +904,7 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
         },
         ClientShellAgent {
             pane_id: "pane_3".into(),
+            parent_pane_id: None,
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
             name: Some("third".into()),
@@ -971,6 +979,7 @@ fn agent_sort_toggle_is_client_local_and_persists_per_endpoint() {
     let mut projected = snapshot();
     projected.agents.push(ClientShellAgent {
         pane_id: "pane_1".into(),
+        parent_pane_id: None,
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
         name: Some("pi".into()),
@@ -1536,6 +1545,7 @@ fn semantic_notifications_use_client_policy_and_stable_navigation_targets() {
     let mut projected = snapshot();
     projected.agents.push(ClientShellAgent {
         pane_id: "pane_2".into(),
+        parent_pane_id: None,
         workspace_id: "ws_2".into(),
         tab_id: "tab_2".into(),
         name: None,
@@ -1681,4 +1691,245 @@ fn semantic_notifications_use_client_policy_and_stable_navigation_targets() {
     assert!(repaint);
     assert!(state.visible_notification.is_none());
     assert_eq!(state.pending_notifications.len(), 1);
+}
+
+#[test]
+fn agent_sidebar_nests_dispatch_children_under_their_parent() {
+    use std::collections::HashSet;
+
+    let mut projected = snapshot();
+    for pane in ["pane_2", "pane_3", "pane_4"] {
+        let mut extra = projected.panes[0].clone();
+        extra.pane_id = pane.into();
+        extra.focused = false;
+        projected.panes.push(extra);
+    }
+    let agent = |pane: &str, name: &str, parent: Option<&str>, status: AgentStatus, seq: u64| {
+        ClientShellAgent {
+            pane_id: pane.into(),
+            parent_pane_id: parent.map(str::to_string),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some(name.into()),
+            display_agent: None,
+            agent: Some("pi".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: status,
+            state_change_seq: seq,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        }
+    };
+    projected.agents = vec![
+        agent("pane_1", "orchestrator", None, AgentStatus::Working, 1),
+        agent(
+            "pane_2",
+            "worker-a",
+            Some("pane_1"),
+            AgentStatus::Working,
+            2,
+        ),
+        agent(
+            "pane_3",
+            "worker-b",
+            Some("pane_1"),
+            AgentStatus::Blocked,
+            3,
+        ),
+        agent("pane_4", "worker-c", Some("pane_2"), AgentStatus::Idle, 4),
+    ];
+
+    let entries = super::agent_sidebar::agent_tree_entries(
+        &projected,
+        crate::config::AgentPanelSortConfig::Spaces,
+        &HashSet::new(),
+    );
+    let shape = entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.pane_id.as_str(),
+                entry.depth,
+                entry.last_child,
+                entry.descendant_count,
+                entry.descendants_blocked,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        shape,
+        vec![
+            ("pane_1", 0, false, 3, 1),
+            ("pane_2", 1, false, 1, 0),
+            ("pane_4", 2, true, 0, 0),
+            ("pane_3", 1, true, 0, 0),
+        ]
+    );
+
+    // Collapsing a parent hides the subtree but keeps the rollup counts.
+    let collapsed = HashSet::from(["pane_1".to_string()]);
+    let entries = super::agent_sidebar::agent_tree_entries(
+        &projected,
+        crate::config::AgentPanelSortConfig::Spaces,
+        &collapsed,
+    );
+    assert_eq!(entries.len(), 1);
+    assert!(entries[0].collapsed);
+    assert_eq!(entries[0].descendant_count, 3);
+    assert_eq!(entries[0].descendants_blocked, 1);
+
+    // A missing parent re-roots its children instead of dropping them.
+    projected.agents.retain(|agent| agent.pane_id != "pane_1");
+    let entries = super::agent_sidebar::agent_tree_entries(
+        &projected,
+        crate::config::AgentPanelSortConfig::Spaces,
+        &HashSet::new(),
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry.depth == 0)
+            .map(|entry| entry.pane_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["pane_2", "pane_3"]
+    );
+
+    // Mutual parent links are broken instead of recursing forever.
+    projected.agents.push(agent(
+        "pane_1",
+        "orchestrator",
+        Some("pane_2"),
+        AgentStatus::Working,
+        5,
+    ));
+    let entries = super::agent_sidebar::agent_tree_entries(
+        &projected,
+        crate::config::AgentPanelSortConfig::Spaces,
+        &HashSet::new(),
+    );
+    assert_eq!(entries.len(), 4);
+}
+
+#[test]
+fn agent_sidebar_renders_dispatch_tree_with_toggle_and_rollup() {
+    let mut projected = snapshot();
+    for pane in ["pane_2", "pane_3"] {
+        let mut extra = projected.panes[0].clone();
+        extra.pane_id = pane.into();
+        extra.focused = false;
+        projected.panes.push(extra);
+    }
+    let agent = |pane: &str, name: &str, parent: Option<&str>, status: AgentStatus, seq: u64| {
+        ClientShellAgent {
+            pane_id: pane.into(),
+            parent_pane_id: parent.map(str::to_string),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some(name.into()),
+            display_agent: None,
+            agent: Some("pi".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: status,
+            state_change_seq: seq,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        }
+    };
+    projected.agents = vec![
+        agent("pane_1", "orchestrator", None, AgentStatus::Working, 1),
+        agent(
+            "pane_2",
+            "worker-a",
+            Some("pane_1"),
+            AgentStatus::Working,
+            2,
+        ),
+        agent(
+            "pane_3",
+            "worker-b",
+            Some("pane_1"),
+            AgentStatus::Blocked,
+            3,
+        ),
+    ];
+
+    let mut config = Config::default();
+    config.ui.sidebar.agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame_text = |state: &mut ClientShellState| {
+        let frame = state.compose(106, 30).expect("agent sidebar frame");
+        frame
+            .cells
+            .chunks(frame.width as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let text = frame_text(&mut state);
+    assert!(text.contains("├─ worker-a"), "frame: {text}");
+    assert!(text.contains("└─ worker-b"), "frame: {text}");
+    assert!(
+        text.contains("▾"),
+        "parent row should expose a collapse toggle: {text}"
+    );
+    assert_eq!(state.hits.agent_toggles.len(), 1);
+
+    let toggle = state.hits.agent_toggles[0].0;
+    let click = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: toggle.x,
+        row: toggle.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(click.repaint);
+    assert!(state.collapsed_agent_parents.contains("pane_1"));
+
+    let text = frame_text(&mut state);
+    assert!(
+        !text.contains("worker-a"),
+        "collapsed parent hides children: {text}"
+    );
+    assert!(
+        text.contains("▸"),
+        "collapsed parent flips the toggle: {text}"
+    );
+    assert!(
+        text.contains("+2"),
+        "collapsed parent rolls up its subtree: {text}"
+    );
+    assert!(
+        text.contains("×1"),
+        "collapsed parent surfaces a blocked child: {text}"
+    );
+    assert!(state
+        .hits
+        .agents
+        .iter()
+        .all(|(_, pane_id)| pane_id == "pane_1"));
+
+    // Clicking the toggle again expands the subtree.
+    let toggle = state.hits.agent_toggles[0].0;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: toggle.x,
+        row: toggle.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(state.collapsed_agent_parents.is_empty());
+    let text = frame_text(&mut state);
+    assert!(text.contains("worker-a"), "frame: {text}");
 }
